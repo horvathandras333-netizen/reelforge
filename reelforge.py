@@ -57,7 +57,7 @@ DEFAULT_VIDEO_MAX = 8.0
 # extra item-data roles the delegates read at paint time
 MEDIA_CARD_SIZE    = QSize(128,146)
 MEDIA_THUMB_H      = 80
-TIMELINE_CARD_SIZE = QSize(100,84)
+TIMELINE_CARD_SIZE = QSize(100,70)
 ROLE_KIND  = Qt.UserRole+1
 ROLE_BADGE = Qt.UserRole+2
 
@@ -1008,7 +1008,7 @@ class TimelineItemDelegate(QStyledItemDelegate):
         selected=bool(option.state & QStyle.State_Selected)
         pad=3
         card=option.rect.adjusted(pad,pad,-pad,-pad)
-        foot_h=26
+        foot_h=22
         thumb=QRect(card.left(),card.top(),card.width(),card.height()-foot_h)
         foot=QRect(card.left(),thumb.bottom(),card.width(),foot_h)
         path=QPainterPath(); path.addRoundedRect(QRectF(card),9,9)
@@ -1081,7 +1081,7 @@ class WaveformBar(QWidget):
     def __init__(self, window, parent=None):
         super().__init__(parent)
         self._win=window
-        self.setFixedHeight(28); self.setMinimumWidth(40)
+        self.setFixedHeight(18); self.setMinimumWidth(40)
         self.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
 
     def paintEvent(self, e):
@@ -1107,7 +1107,7 @@ class _AutoHeightTabWidget(QTabWidget):
         base=super().sizeHint()
         cw=self.currentWidget()
         if cw is None: return base
-        return QSize(base.width(),cw.sizeHint().height()+self.tabBar().sizeHint().height()+8)
+        return QSize(base.width(),cw.sizeHint().height()+self.tabBar().sizeHint().height()+4)
     def minimumSizeHint(self):
         return self.sizeHint()
 
@@ -1133,7 +1133,7 @@ class TimelineList(_FileDropListWidget):
         self.setWrapping(False); self.setDragDropMode(QListWidget.DragDrop)
         self.setAcceptDrops(True); self.setSelectionMode(QListWidget.SingleSelection)
         self.setGridSize(TIMELINE_CARD_SIZE); self.setSpacing(5)
-        self.setFixedHeight(TIMELINE_CARD_SIZE.height()+16)
+        self.setFixedHeight(TIMELINE_CARD_SIZE.height()+12)
         self.setItemDelegate(TimelineItemDelegate(window))
         self._playhead=TimelinePlayhead(window,self.viewport())
         self._playhead.setGeometry(self.viewport().rect())
@@ -1219,7 +1219,6 @@ class ReelForge(QMainWindow):
         self.setWindowTitle(APP_NAME)
         self.setWindowFlag(Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.resize(1560,1020)
         self.theme="dark"; self._colors=THEMES[self.theme]
         self._serif_family=_find_serif_family()
         self._icon_registry=[]
@@ -1233,6 +1232,14 @@ class ReelForge(QMainWindow):
         self._undo_stack:list=[]
         self._build_ui()
         self._apply_theme()
+        # clamp to the available screen so the window chrome (close button,
+        # timeline) can never start off-screen on smaller displays; on short
+        # screens just open maximized so every panel is fully visible
+        avail=QApplication.primaryScreen().availableGeometry()
+        self.resize(min(1560,avail.width()-8),min(1020,avail.height()-8))
+        fg=self.frameGeometry(); fg.moveCenter(avail.center()); self.move(fg.topLeft())
+        if avail.height()<1000:
+            self.setWindowState(Qt.WindowMaximized)
         if not FFMPEG: QTimer.singleShot(300,self._warn_no_ffmpeg)
 
     # ── theming / icon helpers ───────────────────────────────────────────────
@@ -1266,7 +1273,7 @@ class ReelForge(QMainWindow):
         return f
 
     def _panel_header(self, icon_name, title, trailing=None):
-        row=QHBoxLayout(); row.setContentsMargins(15,10,15,8); row.setSpacing(9)
+        row=QHBoxLayout(); row.setContentsMargins(15,8,15,6); row.setSpacing(9)
         icon=QLabel(); row.addWidget(icon)
         self._themed_icon(icon,icon_name,14,"mut","pixmap")
         lbl=QLabel(title); lbl.setFont(self._serif_font(10.5))
@@ -1288,7 +1295,6 @@ class ReelForge(QMainWindow):
         card=QVBoxLayout(root_card); card.setContentsMargins(0,0,0,0); card.setSpacing(0)
 
         card.addWidget(self._build_titlebar())
-        card.addWidget(self._build_menu())
         card.addWidget(self._build_auto_band())
 
         body=QSplitter(Qt.Horizontal)
@@ -1297,7 +1303,7 @@ class ReelForge(QMainWindow):
         body.addWidget(self._build_inspector_panel())
         body.setStretchFactor(0,0); body.setStretchFactor(1,1); body.setStretchFactor(2,0)
         body_wrap=QWidget(); bwl=QVBoxLayout(body_wrap)
-        bwl.setContentsMargins(14,6,14,8); bwl.addWidget(body)
+        bwl.setContentsMargins(14,4,14,6); bwl.addWidget(body)
         card.addWidget(body_wrap,1)
 
         card.addWidget(self._build_timeline_panel())
@@ -1316,7 +1322,7 @@ class ReelForge(QMainWindow):
         return b
 
     def _build_titlebar(self):
-        bar=_TitleBar(self); bar.setObjectName("titlebar"); bar.setFixedHeight(48)
+        bar=_TitleBar(self); bar.setObjectName("titlebar"); bar.setFixedHeight(42)
         lay=QHBoxLayout(bar); lay.setContentsMargins(18,0,8,0); lay.setSpacing(0)
 
         star=QLabel(); lay.addWidget(star)
@@ -1327,7 +1333,8 @@ class ReelForge(QMainWindow):
         lay.addWidget(title); lay.addSpacing(12)
 
         pill=QLabel("reelforge.py"); pill.setObjectName("pathPill")
-        lay.addWidget(pill); lay.addStretch(1)
+        lay.addWidget(pill); lay.addSpacing(14)
+        lay.addWidget(self._build_menu()); lay.addStretch(1)
 
         self.theme_btn=QPushButton(); self.theme_btn.setObjectName("modeBtn")
         self.theme_btn.setToolTip("Switch theme"); self.theme_btn.clicked.connect(self._toggle_theme)
@@ -1338,10 +1345,12 @@ class ReelForge(QMainWindow):
 
         self.min_btn=self._chrome_btn("minimize"); self.min_btn.setToolTip("Minimize")
         self.min_btn.clicked.connect(self.showMinimized)
+        self._themed_icon(self.min_btn,"minimize",14,"mut","icon")
         self.max_btn=self._chrome_btn("maximize"); self.max_btn.setToolTip("Maximize")
         self.max_btn.clicked.connect(self._toggle_maximize)
         self.close_btn=self._chrome_btn("close"); self.close_btn.setObjectName("closeBtn")
         self.close_btn.setToolTip("Close"); self.close_btn.clicked.connect(self.close)
+        self._themed_icon(self.close_btn,"close",14,"mut","icon")
         for b in (self.min_btn,self.max_btn,self.close_btn): lay.addWidget(b)
 
         self._update_mode_button(); self._update_max_icon()
@@ -1379,7 +1388,7 @@ class ReelForge(QMainWindow):
 
     def _build_auto_band(self):
         band=self._card("autoBand")
-        bl=QHBoxLayout(band); bl.setContentsMargins(16,9,16,9); bl.setSpacing(16)
+        bl=QHBoxLayout(band); bl.setContentsMargins(16,6,16,6); bl.setSpacing(16)
 
         lead=QHBoxLayout(); lead.setSpacing(8)
         lico=QLabel(); self._themed_icon(lico,"lightning",15,"ac","pixmap"); lead.addWidget(lico)
@@ -1496,7 +1505,7 @@ class ReelForge(QMainWindow):
         card=self._card()
         cl=QVBoxLayout(card); cl.setContentsMargins(0,0,0,0); cl.setSpacing(0)
 
-        header=QHBoxLayout(); header.setContentsMargins(16,7,16,7); header.setSpacing(10)
+        header=QHBoxLayout(); header.setContentsMargins(16,5,16,5); header.setSpacing(10)
         hico=QLabel(); self._themed_icon(hico,"timeline_hdr",14,"mut","pixmap"); header.addWidget(hico)
         htxt=QLabel("Timeline"); htxt.setFont(self._serif_font(10.5)); header.addWidget(htxt)
         hint=QLabel("Drag clips to reorder — or drop from Explorer"); hint.setObjectName("mutedText")
@@ -1538,11 +1547,11 @@ class ReelForge(QMainWindow):
         tabs=_AutoHeightTabWidget(); tabs.setObjectName("pillTabs"); tabs.setDocumentMode(True)
 
         # ── TAB 1: Clip ──────────────────────────────────────────────────────
-        clip_tab=QWidget(); ctv=QVBoxLayout(clip_tab); ctv.setContentsMargins(0,0,0,0); ctv.setSpacing(12)
+        clip_tab=QWidget(); ctv=QVBoxLayout(clip_tab); ctv.setContentsMargins(0,0,0,0); ctv.setSpacing(6)
 
         info_row=QWidget(); info_row.setObjectName("clipInfoRow")
-        irl=QHBoxLayout(info_row); irl.setContentsMargins(11,10,11,10); irl.setSpacing(10)
-        avatar=QLabel(); avatar.setObjectName("clipAvatar"); avatar.setFixedSize(30,30)
+        irl=QHBoxLayout(info_row); irl.setContentsMargins(11,8,11,8); irl.setSpacing(10)
+        avatar=QLabel(); avatar.setObjectName("clipAvatar"); avatar.setFixedSize(26,26)
         avatar.setAlignment(Qt.AlignCenter)
         self._themed_icon(avatar,"preview_hdr",14,"#ffffff","pixmap")
         irl.addWidget(avatar)
@@ -1556,6 +1565,7 @@ class ReelForge(QMainWindow):
         ctv.addWidget(info_row)
 
         form_host=QWidget(); cf=QFormLayout(form_host)
+        cf.setContentsMargins(0,2,0,2); cf.setVerticalSpacing(6)
         self.photo_dur_spin=self._dspin(0.5,60,0.5,DEFAULT_PHOTO_DUR," s",self._update_selected_clip)
         self.video_max_spin=self._dspin(1,120,1,DEFAULT_VIDEO_MAX," s",self._update_selected_clip)
         self.trim_start_spin=self._dspin(0,3600,1,0," s in",self._update_selected_clip)
@@ -1571,7 +1581,7 @@ class ReelForge(QMainWindow):
 
         # Music inline
         mbox=QGroupBox("Music")
-        mf=QVBoxLayout(mbox)
+        mf=QVBoxLayout(mbox); mf.setSpacing(5)
         self.music_label=QLabel("No song selected"); self.music_label.setWordWrap(True)
         self.waveform_bar=WaveformBar(self)
         bm=QPushButton(" Choose song…"); bm.setObjectName("ghostBtn"); bm.clicked.connect(self.choose_music)
@@ -1707,29 +1717,32 @@ class ReelForge(QMainWindow):
 
         scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(tabs)
         scroll.setFrameShape(QFrame.NoFrame)
-        body=QWidget(); bodyl=QVBoxLayout(body); bodyl.setContentsMargins(15,4,15,4); bodyl.addWidget(scroll)
+        body=QWidget(); bodyl=QVBoxLayout(body); bodyl.setContentsMargins(15,0,15,0); bodyl.addWidget(scroll)
         cl.addWidget(body,1)
 
         # export controls — always visible, pinned below the scrollable tabs
-        footer=QWidget(); fl=QVBoxLayout(footer); fl.setContentsMargins(15,6,15,10); fl.setSpacing(6)
+        footer=QWidget(); fl=QVBoxLayout(footer); fl.setContentsMargins(15,5,15,8); fl.setSpacing(5)
         self.preview_btn=QPushButton(" Preview draft")
         self.preview_btn.setObjectName("ghostBtn")
-        self.preview_btn.setMinimumHeight(32)
+        self.preview_btn.setMinimumHeight(34)
         self.preview_btn.setToolTip("Quick low-res render (360p, ultrafast) played in the preview pane —\n"
                                     "see transitions, mood, text and timing without a full export")
         self.preview_btn.clicked.connect(self.preview_draft)
         self._themed_icon(self.preview_btn,"play",12,"tx","icon")
-        fl.addWidget(self.preview_btn)
         self.export_btn=QPushButton("Export Reel")
         self.export_btn.setObjectName("primaryBtn")
-        self.export_btn.setMinimumHeight(38)
+        self.export_btn.setMinimumHeight(34)
         self.export_btn.setToolTip("Render the timeline with the settings from these tabs (Ctrl+E)")
         self.export_btn.clicked.connect(self.export_reel)
-        fl.addWidget(self.export_btn)
-        self.progress=QProgressBar(); self.progress.setValue(0); fl.addWidget(self.progress)
+        btn_row=QHBoxLayout(); btn_row.setSpacing(6)
+        btn_row.addWidget(self.preview_btn,1); btn_row.addWidget(self.export_btn,1)
+        fl.addLayout(btn_row)
+        self.progress=QProgressBar(); self.progress.setValue(0)
         self.status_label=QLabel("Ready"+(""if FFMPEG else"  —  FFmpeg not found"))
         self.status_label.setObjectName("mutedText")
-        fl.addWidget(self.status_label)
+        stat_row=QHBoxLayout(); stat_row.setSpacing(8)
+        stat_row.addWidget(self.status_label,1); stat_row.addWidget(self.progress,1)
+        fl.addLayout(stat_row)
         cl.addWidget(footer)
 
         card.setMinimumWidth(300); card.setMaximumWidth(360)
@@ -1817,7 +1830,7 @@ class ReelForge(QMainWindow):
 
             QTabWidget#pillTabs::pane{{border:none;margin-top:6px}}
             QTabWidget#pillTabs::tab-bar{{alignment:left}}
-            QTabBar::tab{{background:transparent;color:{c['mut']};padding:9px 6px;margin-right:4px;
+            QTabBar::tab{{background:transparent;color:{c['mut']};padding:6px;margin-right:4px;
                           border:none;border-radius:8px;min-width:56px}}
             QTabBar::tab:selected{{background:{c['ac']};color:#ffffff;font-weight:600}}
             QTabBar::tab:hover:!selected{{background:{c['hov']}}}
@@ -1826,21 +1839,21 @@ class ReelForge(QMainWindow):
             QListWidget::item{{border:none}}
             QListWidget::item:selected{{background:transparent}}
 
-            QGroupBox{{border:1px solid {c['bd']};border-radius:9px;margin-top:12px;padding:10px;
+            QGroupBox{{border:1px solid {c['bd']};border-radius:9px;margin-top:10px;padding:6px;
                        background:{c['inset']}}}
             QGroupBox::title{{subcontrol-origin:margin;left:8px;padding:0 4px;color:{c['mut']}}}
 
             QProgressBar{{border:1px solid {c['bd']};border-radius:6px;text-align:center;
-                          background:{c['inset']};height:16px;color:{c['tx']}}}
+                          background:{c['inset']};height:11px;color:{c['tx']}}}
             QProgressBar::chunk{{background:{c['ac']};border-radius:5px}}
 
             QComboBox,QDoubleSpinBox,QSpinBox,QLineEdit{{background:{c['inset']};
-                          border:1px solid {c['bd']};border-radius:8px;padding:4px 8px}}
+                          border:1px solid {c['bd']};border-radius:8px;padding:3px 8px}}
             QComboBox:hover,QDoubleSpinBox:hover,QSpinBox:hover,QLineEdit:hover{{border-color:{c['bd2']}}}
             QComboBox::drop-down{{border:none;width:22px}}
             QComboBox QAbstractItemView{{background:{c['panel']};border:1px solid {c['bd']};
                           selection-background-color:{c['ac']};selection-color:#ffffff}}
-            QDoubleSpinBox,QSpinBox{{min-height:26px;padding-right:22px}}
+            QDoubleSpinBox,QSpinBox{{min-height:22px;padding-right:22px}}
             QDoubleSpinBox::up-button,QSpinBox::up-button{{
                 subcontrol-origin:border;subcontrol-position:top right;
                 width:20px;height:14px;border:none;background:transparent}}
