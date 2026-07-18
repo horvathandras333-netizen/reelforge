@@ -46,6 +46,8 @@ log = logging.getLogger("reelforge")
 
 # ── constants ────────────────────────────────────────────────────────────────
 APP_NAME    = "ReelForge"
+APP_DIR     = Path(__file__).resolve().parent
+ICON_PATH   = str(APP_DIR / ("icon.ico" if (APP_DIR/"icon.ico").exists() else "icon.png"))
 PROJECT_EXT = ".rfproj"
 PHOTO_EXTS  = {".jpg",".jpeg",".png",".webp",".bmp"}
 VIDEO_EXTS  = {".mp4",".mov",".mkv",".avi",".webm",".m4v"}
@@ -1218,6 +1220,7 @@ class ReelForge(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
+        self.setWindowIcon(QIcon(ICON_PATH))
         self.setWindowFlag(Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.theme="dark"; self._colors=THEMES[self.theme]
@@ -2666,7 +2669,16 @@ class ReelForge(QMainWindow):
 
 # ── entry point ───────────────────────────────────────────────────────────────
 def main():
+    if sys.platform=="win32":
+        # without this, Windows groups us under python.exe's own icon in the
+        # taskbar instead of ours, since we're not a compiled/pinned .exe
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(f"reelforge.{APP_NAME}")
+        except Exception as ex:
+            log.warning("failed to set AppUserModelID: %s",ex)
     app=QApplication(sys.argv); app.setApplicationName(APP_NAME)
+    app.setWindowIcon(QIcon(ICON_PATH))
     win=ReelForge(); win.show(); sys.exit(app.exec())
 
 if __name__=="__main__":

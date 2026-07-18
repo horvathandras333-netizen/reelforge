@@ -13,7 +13,7 @@ Install dependencies:
 python -m pip install PySide6 imageio-ffmpeg Pillow
 python -m pip install librosa   # optional — required only for beat sync
 ```
-(`install_requirements.bat` / `run_reelforge.bat` wrap the install and run steps for Windows double-click use.)
+(`install_requirements.bat` / `run_reelforge.bat` wrap the install and run steps for Windows double-click use. `install.bat` additionally creates a desktop shortcut using `icon.ico`/`icon.png` as the app icon.)
 
 Run the app:
 ```
