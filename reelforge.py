@@ -24,9 +24,11 @@ import json, logging, os, random, re, shutil, subprocess, sys, tempfile, threadi
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QUrl, QSize, QTimer, QMimeData, QPointF
-from PySide6.QtGui  import (QPixmap, QIcon, QAction, QFont, QDrag, QShortcut, QKeySequence,
-                             QPainter, QColor, QPolygonF)
+from PySide6.QtCore import (Qt, QThread, Signal, QUrl, QSize, QTimer, QMimeData, QPointF,
+                             QByteArray, QRectF, QRect, QEvent)
+from PySide6.QtGui  import (QPixmap, QIcon, QAction, QFont, QFontDatabase, QDrag, QShortcut,
+                             QKeySequence, QPainter, QColor, QPolygonF, QCursor, QPainterPath, QPen)
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
@@ -34,7 +36,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, QStackedWidget,
     QSlider, QComboBox, QCheckBox, QDoubleSpinBox, QGroupBox, QFormLayout,
     QProgressBar, QMessageBox, QSplitter, QFrame, QStyle, QScrollArea,
-    QLineEdit, QSpinBox, QTabWidget,
+    QLineEdit, QSpinBox, QTabWidget, QStyledItemDelegate, QStyleOptionViewItem,
+    QGraphicsDropShadowEffect, QSizePolicy, QMenuBar,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -49,6 +52,14 @@ AUDIO_EXTS  = {".mp3",".wav",".m4a",".aac",".flac",".ogg"}
 THUMB_SIZE  = QSize(120,68)
 DEFAULT_PHOTO_DUR = 4.0
 DEFAULT_VIDEO_MAX = 8.0
+
+# grid-card geometry for the restyled media library / timeline strip, and the
+# extra item-data roles the delegates read at paint time
+MEDIA_CARD_SIZE    = QSize(128,146)
+MEDIA_THUMB_H      = 80
+TIMELINE_CARD_SIZE = QSize(112,98)
+ROLE_KIND  = Qt.UserRole+1
+ROLE_BADGE = Qt.UserRole+2
 
 EXPORT_PRESETS = {
     "Instagram Reel (1080×1920)": (1080,1920),
@@ -91,6 +102,82 @@ TEXT_POSITIONS = {
 }
 
 _NO_WINDOW = getattr(subprocess,"CREATE_NO_WINDOW",0) if os.name=="nt" else 0
+
+# ── theme palettes ───────────────────────────────────────────────────────────
+THEMES = {
+    "dark": {
+        "bg":"#262624","panel":"#2f2e2b","inset":"#211f1d","frame":"#3a3835",
+        "tx":"#ece7df","mut":"#9c968b","bd":"#3a3835","bd2":"#4b4844",
+        "ac":"#d97757","ac2":"#c4633f",
+        "hov":"rgba(255,255,255,14)","hov2":"rgba(255,255,255,23)",
+    },
+    "light": {
+        "bg":"#f4f2ee","panel":"#ecebe5","inset":"#e3e1d9","frame":"#d8d4cc",
+        "tx":"#2b2724","mut":"#7d766c","bd":"#dcd8d0","bd2":"#c6c1b7",
+        "ac":"#c15f3c","ac2":"#a94e2f",
+        "hov":"rgba(0,0,0,10)","hov2":"rgba(0,0,0,18)",
+    },
+}
+
+# ── SVG icon snippets (paths copied verbatim from ReelForge.dc.html) ────────
+# Each value is an inner-<svg> fragment with `{c}` standing in for the colour
+# the mockup expressed as currentColor / var(--mut) / var(--ac).
+ICON_SVG = {
+    "star":       '<path d="M12 1c.4 4.7 1.9 7.6 4.3 8.9C18.2 10.9 20.8 11.4 23 11.6c-4.7.4-7.6 1.9-8.9 4.3-1 1.9-1.5 4.5-1.7 6.7-.4-4.7-1.9-7.6-4.3-8.9C6.2 12.8 3.6 12.3 1.4 12.1c4.7-.4 7.6-1.9 8.9-4.3C11.3 5.9 11.8 3.3 12 1Z" fill="{c}"/>',
+    "minimize":   '<line x1="5" y1="12" x2="19" y2="12" stroke="{c}" stroke-width="2" stroke-linecap="round"/>',
+    "maximize":   '<rect x="4" y="4" width="16" height="16" rx="2" stroke="{c}" stroke-width="2" fill="none"/>',
+    "restore":    '<rect x="6" y="4" width="14" height="14" rx="2" stroke="{c}" stroke-width="2" fill="none"/><path d="M4 8v10a2 2 0 0 0 2 2h10" stroke="{c}" stroke-width="2" fill="none"/>',
+    "close":      '<line x1="6" y1="6" x2="18" y2="18" stroke="{c}" stroke-width="2" stroke-linecap="round"/><line x1="18" y1="6" x2="6" y2="18" stroke="{c}" stroke-width="2" stroke-linecap="round"/>',
+    "sun":        '<circle cx="12" cy="12" r="4" stroke="{c}" stroke-width="2" fill="none"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="{c}" stroke-width="2" fill="none" stroke-linecap="round"/>',
+    "moon":       '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" stroke="{c}" stroke-width="2" fill="none" stroke-linejoin="round"/>',
+    "lightning":  '<path d="M13 2 3 14h7l-1 8 10-12h-7z" fill="{c}"/>',
+    "grid3":      '<rect x="3" y="3" width="7" height="7" rx="1.5" stroke="{c}" stroke-width="2" fill="none"/><rect x="14" y="3" width="7" height="7" rx="1.5" stroke="{c}" stroke-width="2" fill="none"/><rect x="3" y="14" width="7" height="7" rx="1.5" stroke="{c}" stroke-width="2" fill="none"/>',
+    "media_hdr":  '<rect x="3" y="3" width="18" height="18" rx="2" stroke="{c}" stroke-width="1.8" fill="none"/><circle cx="9" cy="9" r="2" stroke="{c}" stroke-width="1.8" fill="none"/><path d="m21 15-5-5L5 21" stroke="{c}" stroke-width="1.8" fill="none"/>',
+    "preview_hdr":'<path d="m22 8-6 4 6 4V8z" stroke="{c}" stroke-width="1.8" fill="none"/><rect x="2" y="6" width="14" height="12" rx="2" stroke="{c}" stroke-width="1.8" fill="none"/>',
+    "play":       '<path d="M8 5v14l11-7z" fill="{c}"/>',
+    "pause":      '<rect x="6" y="4" width="4" height="16" rx="1" fill="{c}"/><rect x="14" y="4" width="4" height="16" rx="1" fill="{c}"/>',
+    "inspector_hdr":'<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6" stroke="{c}" stroke-width="1.8" fill="none" stroke-linecap="round"/>',
+    "music_hdr":  '<path d="M9 18V5l12-2v13" stroke="{c}" stroke-width="2" fill="none"/><circle cx="6" cy="18" r="3" stroke="{c}" stroke-width="2" fill="none"/><circle cx="18" cy="16" r="3" stroke="{c}" stroke-width="2" fill="none"/>',
+    "timeline_hdr":'<rect x="2" y="6" width="20" height="12" rx="2" stroke="{c}" stroke-width="1.8" fill="none"/><path d="M6 6v12M12 6v12M18 6v12" stroke="{c}" stroke-width="1.8" fill="none"/>',
+    "import":     '<path d="M12 3v12M7 8l5-5 5 5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke="{c}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+    "add":        '<path d="M5 12h14M12 5l7 7-7 7" stroke="{c}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+    "remove":     '<path d="M3 6h18M8 6V4h8v2M6 6v14a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6" stroke="{c}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+    "undo":       '<path d="M9 14 4 9l5-5M4 9h11a5 5 0 0 1 0 10H9" stroke="{c}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+    "chevron_up": '<path d="m18 15-6-6-6 6" stroke="{c}" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+    "chevron_down":'<path d="m6 9 6 6 6-6" stroke="{c}" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+    "plus":       '<path d="M12 5v14M5 12h14" stroke="{c}" stroke-width="2" fill="none" stroke-linecap="round"/>',
+    "photo_glyph":'<path d="M4 5h16v14H4zM4 15l4-4 4 4M14 13l2-2 4 4" stroke="{c}" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+    "video_glyph":'<path d="M8 5v14l11-7z" stroke="{c}" stroke-width="1.7" fill="none" stroke-linejoin="round"/>',
+    "chevron_down_combo":'<path d="m6 9 6 6 6-6" stroke="{c}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+}
+
+def _svg_icon(name, size=14, color="#e6e6e6", viewbox="0 0 24 24"):
+    """Rasterize an ICON_SVG snippet (path data copied from ReelForge.dc.html)
+    into a QIcon at the given colour — used everywhere instead of hand-drawn
+    QPainter primitives so re-tinting on theme toggle is just a re-call."""
+    inner=ICON_SVG[name].format(c=color)
+    svg=f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{viewbox}">{inner}</svg>'
+    renderer=QSvgRenderer(QByteArray(svg.encode("utf-8")))
+    ratio=QApplication.instance().devicePixelRatio() if QApplication.instance() else 1
+    px=max(1,round(size*ratio))
+    pm=QPixmap(px,px); pm.fill(Qt.transparent)
+    p=QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
+    renderer.render(p,QRectF(0,0,px,px)); p.end()
+    pm.setDevicePixelRatio(ratio)
+    return QIcon(pm)
+
+def _svg_pixmap(name, size=14, color="#e6e6e6", viewbox="0 0 24 24"):
+    return _svg_icon(name,size,color,viewbox).pixmap(size,size)
+
+def _find_serif_family():
+    """Pick the first installed serif family for the mockup's headings —
+    'Source Serif 4' is a webfont and isn't installed locally, so fall back
+    to whatever serif ships with the OS rather than fetching fonts online."""
+    installed=set(QFontDatabase.families())
+    for name in ("Source Serif 4","Source Serif Pro","PT Serif","Noto Serif",
+                 "Constantia","Cambria","Georgia","Times New Roman","Liberation Serif","DejaVu Serif"):
+        if name in installed: return name
+    return None
 
 # ── FFmpeg helpers ───────────────────────────────────────────────────────────
 def _find_binary(name):
@@ -844,28 +931,284 @@ class _FileDropListWidget(QListWidget):
     def _on_internal_drop(self,e):
         super().dropEvent(e)
 
+def _pixmap_from_decoration(deco, size):
+    """QListWidgetItem stores its constructor icon under Qt.DecorationRole as
+    a QIcon — normalize that (or a bare QPixmap) into a QPixmap for painting."""
+    if isinstance(deco,QIcon):
+        return deco.pixmap(size)
+    if isinstance(deco,QPixmap):
+        return deco
+    return None
+
+class MediaItemDelegate(QStyledItemDelegate):
+    """Paints each media-library item as the mockup's card: rounded thumbnail
+    (or a centred kind glyph when there's no real thumbnail yet), a bottom-
+    right duration/PHOTO badge, and the filename below."""
+    def __init__(self, window):
+        super().__init__(window); self._win=window
+
+    def sizeHint(self, option, index):
+        return MEDIA_CARD_SIZE
+
+    def paint(self, painter, option, index):
+        colors=self._win._colors
+        painter.save(); painter.setRenderHint(QPainter.Antialiasing)
+        selected=bool(option.state & QStyle.State_Selected)
+        pad=4
+        card=option.rect.adjusted(pad,pad,-pad,-pad)
+        thumb=QRect(card.left(),card.top(),card.width(),MEDIA_THUMB_H)
+        path=QPainterPath(); path.addRoundedRect(QRectF(thumb),10,10)
+
+        painter.fillPath(path,QColor(colors["inset"]))
+        pm=_pixmap_from_decoration(index.data(Qt.DecorationRole),thumb.size())
+        if pm and not pm.isNull():
+            painter.save(); painter.setClipPath(path)
+            scaled=pm.scaled(thumb.size(),Qt.KeepAspectRatioByExpanding,Qt.SmoothTransformation)
+            x=thumb.left()+(thumb.width()-scaled.width())//2
+            y=thumb.top()+(thumb.height()-scaled.height())//2
+            painter.drawPixmap(x,y,scaled); painter.restore()
+        else:
+            glyph="video_glyph" if index.data(ROLE_KIND)=="video" else "photo_glyph"
+            gp=_svg_pixmap(glyph,20,"#e8e4dc")
+            painter.drawPixmap(thumb.center().x()-10,thumb.center().y()-10,gp)
+
+        pen=QPen(QColor(colors["bd2"] if selected else colors["bd"])); pen.setWidthF(1.4)
+        painter.setPen(pen); painter.drawPath(path)
+
+        badge=index.data(ROLE_BADGE)
+        if badge:
+            f=painter.font(); f.setPointSizeF(7.0); painter.setFont(f)
+            fm=painter.fontMetrics(); bw=fm.horizontalAdvance(badge)+14; bh=15
+            brect=QRectF(thumb.right()-bw-5,thumb.bottom()-bh-5,bw,bh)
+            bpath=QPainterPath(); bpath.addRoundedRect(brect,7,7)
+            painter.fillPath(bpath,QColor(20,18,16,204))
+            painter.setPen(QColor("#ffffff")); painter.drawText(brect,Qt.AlignCenter,badge)
+
+        name=index.data(Qt.DisplayRole) or ""
+        text_rect=QRect(card.left(),thumb.bottom()+6,card.width(),card.height()-MEDIA_THUMB_H-6)
+        painter.setPen(QColor(colors["mut"]))
+        f=painter.font(); f.setPointSizeF(8.3); painter.setFont(f)
+        elided=painter.fontMetrics().elidedText(name,Qt.ElideRight,text_rect.width())
+        painter.drawText(text_rect,Qt.AlignLeft|Qt.AlignVCenter,elided)
+        painter.restore()
+
+class TimelineItemDelegate(QStyledItemDelegate):
+    """Paints each timeline item as the mockup's clip card: thumbnail, a
+    VIDEO/PHOTO kind badge top-left, and a footer strip with name+duration
+    that inverts to the accent colour when the clip is selected."""
+    def __init__(self, window):
+        super().__init__(window); self._win=window
+
+    def sizeHint(self, option, index):
+        return TIMELINE_CARD_SIZE
+
+    def paint(self, painter, option, index):
+        colors=self._win._colors
+        painter.save(); painter.setRenderHint(QPainter.Antialiasing)
+        selected=bool(option.state & QStyle.State_Selected)
+        pad=3
+        card=option.rect.adjusted(pad,pad,-pad,-pad)
+        foot_h=26
+        thumb=QRect(card.left(),card.top(),card.width(),card.height()-foot_h)
+        foot=QRect(card.left(),thumb.bottom(),card.width(),foot_h)
+        path=QPainterPath(); path.addRoundedRect(QRectF(card),9,9)
+
+        painter.save(); painter.setClipPath(path)
+        painter.fillRect(thumb,QColor(colors["inset"]))
+        pm=_pixmap_from_decoration(index.data(Qt.DecorationRole),thumb.size())
+        if pm and not pm.isNull():
+            scaled=pm.scaled(thumb.size(),Qt.KeepAspectRatioByExpanding,Qt.SmoothTransformation)
+            x=thumb.left()+(thumb.width()-scaled.width())//2
+            y=thumb.top()+(thumb.height()-scaled.height())//2
+            painter.drawPixmap(x,y,scaled)
+        painter.fillRect(foot,QColor(colors["ac"] if selected else colors["panel"]))
+        painter.restore()
+
+        pen=QPen(QColor(colors["ac"] if selected else "transparent")); pen.setWidthF(2)
+        painter.setPen(pen); painter.drawPath(path)
+
+        kind=index.data(ROLE_KIND) or ""
+        if kind:
+            f=painter.font(); f.setPointSizeF(6.3); painter.setFont(f)
+            fm=painter.fontMetrics(); bw=fm.horizontalAdvance(kind)+9; bh=13
+            brect=QRectF(thumb.left()+5,thumb.top()+5,bw,bh)
+            bpath=QPainterPath(); bpath.addRoundedRect(brect,7,7)
+            if kind=="VIDEO":
+                painter.fillPath(bpath,QColor(20,18,16,204)); painter.setPen(QColor("#ffffff"))
+            else:
+                painter.fillPath(bpath,QColor(255,255,255,224)); painter.setPen(QColor("#2b2724"))
+            painter.drawText(brect,Qt.AlignCenter,kind)
+
+        name=index.data(Qt.DisplayRole) or ""; dur=index.data(ROLE_BADGE) or ""
+        painter.setPen(QColor("#ffffff") if selected else QColor(colors["mut"]))
+        f=painter.font(); f.setPointSizeF(7.3); painter.setFont(f)
+        fm=painter.fontMetrics(); dw=fm.horizontalAdvance(dur)+4
+        name_rect=QRect(foot.left()+6,foot.top(),max(0,foot.width()-12-dw),foot.height())
+        dur_rect=QRect(foot.right()-dw-6,foot.top(),dw,foot.height())
+        painter.drawText(name_rect,Qt.AlignLeft|Qt.AlignVCenter,
+                          fm.elidedText(name,Qt.ElideRight,name_rect.width()))
+        painter.drawText(dur_rect,Qt.AlignRight|Qt.AlignVCenter,dur)
+        painter.restore()
+
+class TimelinePlayhead(QWidget):
+    """Transparent overlay drawn over the timeline viewport: an accent
+    vertical line + diamond marker at the preview scrubber's fraction."""
+    def __init__(self, window, parent=None):
+        super().__init__(parent)
+        self._win=window; self._frac=0.0
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def set_fraction(self, frac):
+        frac=max(0.0,min(1.0,frac))
+        if frac==self._frac: return
+        self._frac=frac; self.update()
+
+    def paintEvent(self, e):
+        if self._frac<=0.0: return
+        colors=self._win._colors
+        p=QPainter(self); p.setRenderHint(QPainter.Antialiasing)
+        x=self._frac*self.width()
+        p.setPen(QPen(QColor(colors["ac"]),2)); p.drawLine(QPointF(x,0),QPointF(x,self.height()))
+        p.setPen(Qt.NoPen); p.setBrush(QColor(colors["ac"]))
+        p.save(); p.translate(x,7); p.rotate(45); p.drawRoundedRect(QRectF(-5,-5,10,10),2,2)
+        p.restore(); p.end()
+
+class WaveformBar(QWidget):
+    """Decorative music-waveform bar. Matches the mockup's own approach — a
+    fixed bar-height sequence, not real audio-amplitude analysis."""
+    _HEIGHTS=[8,14,20,12,24,18,10,22,26,16,12,20,28,14,8,18,24,20,12,26,
+              16,10,22,14,20,28,18,12,24,16,8,20,14,26,18,12,22,16,10,24,14,8]
+    def __init__(self, window, parent=None):
+        super().__init__(parent)
+        self._win=window
+        self.setFixedHeight(28); self.setMinimumWidth(40)
+        self.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
+
+    def paintEvent(self, e):
+        colors=self._win._colors
+        p=QPainter(self); p.setRenderHint(QPainter.Antialiasing)
+        n=len(self._HEIGHTS); gap=2.0
+        bw=max(1.0,(self.width()-gap*(n-1))/n)
+        accent_n=round(n*0.38); x=0.0
+        for i,h in enumerate(self._HEIGHTS):
+            rect=QRectF(x,self.height()-h,bw,h)
+            path=QPainterPath(); path.addRoundedRect(rect,1.4,1.4)
+            p.fillPath(path,QColor(colors["ac"] if i<accent_n else colors["bd2"]))
+            x+=bw+gap
+        p.end()
+
 class MediaList(_FileDropListWidget):
-    def __init__(self):
+    def __init__(self, window):
         super().__init__()
-        self.setAcceptDrops(True); self.setIconSize(THUMB_SIZE)
+        self._win=window
+        self.setAcceptDrops(True)
+        self.setViewMode(QListWidget.IconMode)
+        self.setMovement(QListWidget.Static)
+        self.setResizeMode(QListWidget.Adjust)
+        self.setWrapping(True); self.setFlow(QListWidget.LeftToRight)
+        self.setGridSize(MEDIA_CARD_SIZE); self.setSpacing(6)
         self.setSelectionMode(QListWidget.SingleSelection)
+        self.setItemDelegate(MediaItemDelegate(window))
 
 class TimelineList(_FileDropListWidget):
     reordered=Signal()
-    def __init__(self):
+    def __init__(self, window):
         super().__init__()
-        self.setIconSize(THUMB_SIZE); self.setFlow(QListWidget.LeftToRight)
+        self._win=window
+        self.setViewMode(QListWidget.IconMode); self.setFlow(QListWidget.LeftToRight)
         self.setWrapping(False); self.setDragDropMode(QListWidget.DragDrop)
         self.setAcceptDrops(True); self.setSelectionMode(QListWidget.SingleSelection)
-        self.setFixedHeight(150)
+        self.setGridSize(TIMELINE_CARD_SIZE); self.setSpacing(5)
+        self.setFixedHeight(TIMELINE_CARD_SIZE.height()+16)
+        self.setItemDelegate(TimelineItemDelegate(window))
+        self._playhead=TimelinePlayhead(window,self.viewport())
+        self._playhead.setGeometry(self.viewport().rect())
+        self._playhead.raise_()
     def _on_internal_drop(self,e):
         super()._on_internal_drop(e); self.reordered.emit()
+    def resizeEvent(self,e):
+        super().resizeEvent(e)
+        self._playhead.setGeometry(self.viewport().rect())
+    def set_playhead_fraction(self, frac):
+        self._playhead.set_fraction(frac)
+
+class _FramelessRoot(QWidget):
+    """Central widget for the frameless main window: the thin transparent
+    margin around the visible rounded card doubles as the resize-grab area
+    (native title bars normally provide this) — hovering near the outer
+    edge shows a resize cursor and a press there kicks off an OS-native
+    resize via QWindow.startSystemResize()."""
+    MARGIN=6
+    def __init__(self, window):
+        super().__init__()
+        self._win=window
+        self.setMouseTracking(True)
+        self.setAttribute(Qt.WA_Hover)
+
+    def _edges_at(self, pos):
+        m=self.MARGIN; w=self.width(); h=self.height(); edges=Qt.Edges()
+        if pos.x()<=m: edges|=Qt.Edge.LeftEdge
+        elif pos.x()>=w-m: edges|=Qt.Edge.RightEdge
+        if pos.y()<=m: edges|=Qt.Edge.TopEdge
+        elif pos.y()>=h-m: edges|=Qt.Edge.BottomEdge
+        return edges
+
+    _CURSORS={
+        Qt.Edge.LeftEdge:Qt.SizeHorCursor, Qt.Edge.RightEdge:Qt.SizeHorCursor,
+        Qt.Edge.TopEdge:Qt.SizeVerCursor, Qt.Edge.BottomEdge:Qt.SizeVerCursor,
+    }
+    def mouseMoveEvent(self,e):
+        if self._win.isMaximized():
+            super().mouseMoveEvent(e); return
+        edges=self._edges_at(e.position().toPoint())
+        if edges in (Qt.Edge.LeftEdge|Qt.Edge.TopEdge, Qt.Edge.RightEdge|Qt.Edge.BottomEdge):
+            self.setCursor(Qt.SizeFDiagCursor)
+        elif edges in (Qt.Edge.RightEdge|Qt.Edge.TopEdge, Qt.Edge.LeftEdge|Qt.Edge.BottomEdge):
+            self.setCursor(Qt.SizeBDiagCursor)
+        elif edges & (Qt.Edge.LeftEdge|Qt.Edge.RightEdge):
+            self.setCursor(Qt.SizeHorCursor)
+        elif edges & (Qt.Edge.TopEdge|Qt.Edge.BottomEdge):
+            self.setCursor(Qt.SizeVerCursor)
+        else:
+            self.unsetCursor()
+        super().mouseMoveEvent(e)
+
+    def mousePressEvent(self,e):
+        if e.button()==Qt.LeftButton and not self._win.isMaximized():
+            edges=self._edges_at(e.position().toPoint())
+            if edges:
+                wh=self._win.windowHandle()
+                if wh: wh.startSystemResize(edges); return
+        super().mousePressEvent(e)
+
+class _TitleBar(QFrame):
+    """Custom title bar replacing the native one: dragging any blank area
+    moves the window (QWindow.startSystemMove()); double-click toggles
+    maximize, matching common native title-bar behaviour."""
+    def __init__(self, window, parent=None):
+        super().__init__(parent)
+        self._win=window
+    def mousePressEvent(self,e):
+        if e.button()==Qt.LeftButton:
+            wh=self._win.windowHandle()
+            if wh: wh.startSystemMove()
+        super().mousePressEvent(e)
+    def mouseDoubleClickEvent(self,e):
+        if e.button()==Qt.LeftButton:
+            self._win._toggle_maximize()
+        super().mouseDoubleClickEvent(e)
 
 # ── Main window ───────────────────────────────────────────────────────────────
 class ReelForge(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(APP_NAME); self.resize(1400,860)
+        self.setWindowTitle(APP_NAME)
+        self.setWindowFlag(Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.resize(1560,960)
+        self.theme="dark"; self._colors=THEMES[self.theme]
+        self._serif_family=_find_serif_family()
+        self._icon_registry=[]
         self.media:list[Clip]=[]; self.timeline:list[Clip]=[]
         self.music_path:str|None=None; self.project_path:str|None=None
         self.worker:ExportWorker|None=None
@@ -874,115 +1217,78 @@ class ReelForge(QMainWindow):
         self._beat_times:list[float]=[]; self._bpm=None
         self._beats_for:str|None=None; self._song_start:float=0.0
         self._undo_stack:list=[]
-        self._build_ui(); self._build_menu(); self._apply_dark_theme()
+        self._build_ui()
+        self._apply_theme()
         if not FFMPEG: QTimer.singleShot(300,self._warn_no_ffmpeg)
+
+    # ── theming / icon helpers ───────────────────────────────────────────────
+    def _serif_font(self, size, bold=True):
+        f=QFont(self._serif_family) if self._serif_family else QFont()
+        f.setPointSizeF(size); f.setWeight(QFont.DemiBold if bold else QFont.Normal)
+        return f
+
+    def _themed_icon(self, widget, name, size=14, color="mut", kind="icon"):
+        """Set (and remember) an icon so `_refresh_themed_icons` can re-tint
+        it after a theme toggle. `color` is a THEMES palette key, or a
+        literal '#rrggbb' for icons that don't follow the palette (e.g. a
+        white glyph on a fixed-accent button)."""
+        self._icon_registry.append((widget,name,size,color,kind))
+        self._apply_icon(widget,name,size,color,kind)
+
+    def _apply_icon(self, widget, name, size, color, kind):
+        rgb=color if color.startswith("#") else self._colors[color]
+        if kind=="pixmap":
+            widget.setPixmap(_svg_pixmap(name,size,rgb))
+        else:
+            widget.setIcon(_svg_icon(name,size,rgb)); widget.setIconSize(QSize(size,size))
+
+    def _refresh_themed_icons(self):
+        for widget,name,size,color,kind in self._icon_registry:
+            self._apply_icon(widget,name,size,color,kind)
+
+    def _card(self, object_name=None):
+        f=QFrame(); f.setProperty("card",True)
+        if object_name: f.setObjectName(object_name)
+        return f
+
+    def _panel_header(self, icon_name, title, trailing=None):
+        row=QHBoxLayout(); row.setContentsMargins(15,14,15,11); row.setSpacing(9)
+        icon=QLabel(); row.addWidget(icon)
+        self._themed_icon(icon,icon_name,14,"mut","pixmap")
+        lbl=QLabel(title); lbl.setFont(self._serif_font(10.5))
+        row.addWidget(lbl); row.addStretch(1)
+        if trailing is not None: row.addWidget(trailing)
+        return row
 
     # ── UI build ──────────────────────────────────────────────────────────────
     def _build_ui(self):
-        central=QWidget(); root=QVBoxLayout(central); root.setContentsMargins(8,8,8,8)
+        outer=_FramelessRoot(self)
+        self._outer_layout=QVBoxLayout(outer)
+        self._outer_layout.setContentsMargins(14,14,14,14)
 
-        # ── Quick-start banner ───────────────────────────────────────────────
-        banner=QFrame(); banner.setObjectName("banner")
-        banner.setStyleSheet("#banner{background:#1a2a4a;border:1px solid #2a4a8a;"
-                             "border-radius:8px;padding:4px}")
-        bl=QHBoxLayout(banner); bl.setContentsMargins(12,8,12,8)
+        root_card=self._card("rfRoot")
+        self._root_card=root_card
+        shadow=QGraphicsDropShadowEffect(root_card)
+        shadow.setBlurRadius(60); shadow.setOffset(0,14); shadow.setColor(QColor(0,0,0,150))
+        root_card.setGraphicsEffect(shadow)
+        card=QVBoxLayout(root_card); card.setContentsMargins(0,0,0,0); card.setSpacing(0)
 
-        lbl=QLabel("<b>AUTO REEL</b> — import your media and music, then hit the button. Done.")
-        lbl.setStyleSheet("color:#8ab4f8;font-size:13px")
-        self.auto_btn=QPushButton("⚡  Generate reel automatically")
-        self.auto_btn.setMinimumHeight(40)
-        self.auto_btn.setToolTip("Auto-order clips, auto-pick mood/transitions, and export in one step")
-        self.auto_btn.setStyleSheet(
-            "QPushButton{background:#2a5fcf;color:white;font-weight:bold;"
-            "font-size:14px;border:none;border-radius:7px;padding:0 20px}"
-            "QPushButton:hover{background:#3a6fdf}"
-            "QPushButton:pressed{background:#2050b0}"
-            "QPushButton:disabled{background:#2a3550;color:#6a7590}")
-        self.auto_btn.clicked.connect(self.auto_reel)
+        card.addWidget(self._build_titlebar())
+        card.addWidget(self._build_menu())
+        card.addWidget(self._build_auto_band())
 
-        self.multi_btn=QPushButton("🎲  Generate 3 versions")
-        self.multi_btn.setMinimumHeight(40)
-        self.multi_btn.setToolTip("Render 3 quick variations (different mood + transitions) to compare")
-        self.multi_btn.setStyleSheet(
-            "QPushButton{background:#1e3a6e;color:#8ab4f8;font-size:13px;"
-            "border:1px solid #2a5fcf;border-radius:7px;padding:0 14px}"
-            "QPushButton:hover{background:#264a8a}"
-            "QPushButton:pressed{background:#18305c}"
-            "QPushButton:disabled{background:#20242e;color:#4a5570;border-color:#2c2d34}")
-        self.multi_btn.clicked.connect(self.auto_reel_multi)
+        body=QSplitter(Qt.Horizontal)
+        body.addWidget(self._build_media_panel())
+        body.addWidget(self._build_preview_panel())
+        body.addWidget(self._build_inspector_panel())
+        body.setStretchFactor(0,0); body.setStretchFactor(1,1); body.setStretchFactor(2,0)
+        body_wrap=QWidget(); bwl=QVBoxLayout(body_wrap)
+        bwl.setContentsMargins(16,10,16,14); bwl.addWidget(body)
+        card.addWidget(body_wrap,1)
 
-        bl.addWidget(lbl,1); bl.addWidget(self.auto_btn); bl.addWidget(self.multi_btn)
-        root.addWidget(banner)
-
-        top=QSplitter(Qt.Horizontal)
-
-        # left: media library
-        left=QWidget(); ll=QVBoxLayout(left)
-        ll.addWidget(self._section_label("MEDIA LIBRARY"))
-        self.media_list=MediaList()
-        self.media_list.files_dropped.connect(self.add_files)
-        self.media_list.currentRowChanged.connect(self._on_media_selected)
-        ll.addWidget(self.media_list)
-        br=QHBoxLayout()
-        bi=QPushButton("Import…"); bi.clicked.connect(self.import_dialog)
-        bi.setToolTip("Add photos, videos or a song from disk")
-        ba=QPushButton("Add to Timeline →"); ba.clicked.connect(self.add_selected_to_timeline)
-        ba.setToolTip("Add the selected clip to the timeline (or double-click it)")
-        br.addWidget(bi); br.addWidget(ba); ll.addLayout(br)
-        ball=QPushButton("Add all to timeline"); ball.clicked.connect(self.add_all_to_timeline)
-        ball.setToolTip("Add every clip in the media library to the timeline, in order")
-        ll.addWidget(ball); left.setMinimumWidth(260)
-        self.media_list.itemDoubleClicked.connect(lambda _item: self.add_selected_to_timeline())
-
-        # centre: preview
-        center=QWidget(); cl=QVBoxLayout(center)
-        cl.addWidget(self._section_label("PREVIEW"))
-        self.preview_stack=QStackedWidget()
-        self.image_label=QLabel("Drop photos, videos and a song to start.\n\nAdd clips to the timeline then Export.")
-        self.image_label.setAlignment(Qt.AlignCenter); self.image_label.setWordWrap(True)
-        self.video_widget=QVideoWidget()
-        self.preview_stack.addWidget(self.image_label)
-        self.preview_stack.addWidget(self.video_widget)
-        cl.addWidget(self.preview_stack,1)
-        self.player=QMediaPlayer(); self.audio_out=QAudioOutput()
-        self.player.setAudioOutput(self.audio_out)
-        self.player.setVideoOutput(self.video_widget)
-        self.player.positionChanged.connect(lambda p: self.seek.setValue(p))
-        self.player.durationChanged.connect(lambda d: self.seek.setRange(0,d))
-        ctl=QHBoxLayout()
-        self.play_btn=QPushButton()
-        self.play_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-        self.play_btn.clicked.connect(self._toggle_play)
-        self.seek=QSlider(Qt.Horizontal); self.seek.sliderMoved.connect(self.player.setPosition)
-        ctl.addWidget(self.play_btn); ctl.addWidget(self.seek,1); cl.addLayout(ctl)
-
-        # right: inspector (tabbed)
-        right=self._build_inspector(); right.setMinimumWidth(300)
-
-        top.addWidget(left); top.addWidget(center); top.addWidget(right)
-        top.setStretchFactor(0,0); top.setStretchFactor(1,1); top.setStretchFactor(2,0)
-        root.addWidget(top,1)
-
-        # timeline strip
-        root.addWidget(self._section_label("TIMELINE  (drag clips to reorder — or drag from Explorer directly)"))
-        self.timeline_list=TimelineList()
-        self.timeline_list.reordered.connect(self._sync_timeline_order)
-        self.timeline_list.currentRowChanged.connect(self._on_timeline_selected)
-        self.timeline_list.files_dropped.connect(self._timeline_files_dropped)
-        root.addWidget(self.timeline_list)
-
-        tb=QHBoxLayout()
-        brem=QPushButton("Remove selected"); brem.clicked.connect(self.remove_from_timeline)
-        brem.setToolTip("Remove the selected timeline clip (Del)")
-        bclr=QPushButton("Clear"); bclr.clicked.connect(self.clear_timeline)
-        bclr.setToolTip("Remove every clip from the timeline")
-        bund=QPushButton("Undo"); bund.clicked.connect(self.undo)
-        bund.setToolTip("Undo the last timeline change (Ctrl+Z)")
-        self.total_label=QLabel("Total: 0.0s")
-        tb.addWidget(brem); tb.addWidget(bclr); tb.addWidget(bund)
-        tb.addStretch(1); tb.addWidget(self.total_label)
-        root.addLayout(tb)
-        self.setCentralWidget(central)
+        card.addWidget(self._build_timeline_panel())
+        self._outer_layout.addWidget(root_card)
+        self.setCentralWidget(outer)
 
         QShortcut(QKeySequence("Ctrl+Z"),self,activated=self.undo)
         del_shortcut=QShortcut(QKeySequence("Delete"),self.timeline_list,activated=self.remove_from_timeline)
@@ -990,14 +1296,252 @@ class ReelForge(QMainWindow):
         for btn in self.findChildren(QPushButton):
             btn.setCursor(Qt.PointingHandCursor)
 
-    def _build_inspector(self):
-        container=QWidget(); cl=QVBoxLayout(container)
-        cl.addWidget(self._section_label("INSPECTOR"))
-        tabs=QTabWidget(); tabs.setDocumentMode(True)
+    def _chrome_btn(self, icon_name):
+        b=QPushButton(); b.setObjectName("chromeBtn"); b.setFixedSize(38,32)
+        b.setProperty("iconName",icon_name)
+        return b
+
+    def _build_titlebar(self):
+        bar=_TitleBar(self); bar.setObjectName("titlebar"); bar.setFixedHeight(48)
+        lay=QHBoxLayout(bar); lay.setContentsMargins(18,0,8,0); lay.setSpacing(0)
+
+        star=QLabel(); lay.addWidget(star)
+        self._themed_icon(star,"star",18,"ac","pixmap")
+        lay.addSpacing(11)
+
+        title=QLabel("ReelForge"); title.setObjectName("titleText"); title.setFont(self._serif_font(11.5))
+        lay.addWidget(title); lay.addSpacing(12)
+
+        pill=QLabel("reelforge.py"); pill.setObjectName("pathPill")
+        lay.addWidget(pill); lay.addStretch(1)
+
+        self.theme_btn=QPushButton(); self.theme_btn.setObjectName("modeBtn")
+        self.theme_btn.setToolTip("Switch theme"); self.theme_btn.clicked.connect(self._toggle_theme)
+        lay.addWidget(self.theme_btn)
+
+        sep=QFrame(); sep.setObjectName("titleSep"); sep.setFixedSize(1,20)
+        lay.addSpacing(6); lay.addWidget(sep); lay.addSpacing(6)
+
+        self.min_btn=self._chrome_btn("minimize"); self.min_btn.setToolTip("Minimize")
+        self.min_btn.clicked.connect(self.showMinimized)
+        self.max_btn=self._chrome_btn("maximize"); self.max_btn.setToolTip("Maximize")
+        self.max_btn.clicked.connect(self._toggle_maximize)
+        self.close_btn=self._chrome_btn("close"); self.close_btn.setObjectName("closeBtn")
+        self.close_btn.setToolTip("Close"); self.close_btn.clicked.connect(self.close)
+        for b in (self.min_btn,self.max_btn,self.close_btn): lay.addWidget(b)
+
+        self._update_mode_button(); self._update_max_icon()
+        return bar
+
+    def _update_mode_button(self):
+        dark=self.theme=="dark"
+        self.theme_btn.setIcon(_svg_icon("sun" if dark else "moon",14,self._colors["mut"]))
+        self.theme_btn.setIconSize(QSize(14,14))
+        self.theme_btn.setText(" Light" if dark else " Dark")
+
+    def _update_max_icon(self):
+        name="restore" if self.isMaximized() else "maximize"
+        self.max_btn.setProperty("iconName",name)
+        self.max_btn.setIcon(_svg_icon(name,14,self._colors["mut"]))
+        self.max_btn.setIconSize(QSize(14,14))
+
+    def _toggle_maximize(self):
+        self.showNormal() if self.isMaximized() else self.showMaximized()
+
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        if e.type()==QEvent.Type.WindowStateChange and hasattr(self,"_outer_layout"):
+            maxed=self.isMaximized()
+            if maxed: self._outer_layout.setContentsMargins(0,0,0,0)
+            else:     self._outer_layout.setContentsMargins(14,14,14,14)
+            self._root_card.setProperty("maximized",maxed)
+            self._root_card.style().unpolish(self._root_card); self._root_card.style().polish(self._root_card)
+            self._update_max_icon()
+
+    def _toggle_theme(self):
+        self.theme="light" if self.theme=="dark" else "dark"
+        self._colors=THEMES[self.theme]
+        self._apply_theme()
+
+    def _build_auto_band(self):
+        band=self._card("autoBand")
+        bl=QHBoxLayout(band); bl.setContentsMargins(16,14,16,14); bl.setSpacing(16)
+
+        lead=QHBoxLayout(); lead.setSpacing(8)
+        lico=QLabel(); self._themed_icon(lico,"lightning",15,"ac","pixmap"); lead.addWidget(lico)
+        ltxt=QLabel("Auto Reel"); ltxt.setObjectName("autoLabel"); lead.addWidget(ltxt)
+        bl.addLayout(lead)
+
+        vsep=QFrame(); vsep.setObjectName("titleSep"); vsep.setFixedSize(1,22); bl.addWidget(vsep)
+
+        desc=QLabel("Import your media and a song, then hit generate — ReelForge cuts the reel for you.")
+        desc.setObjectName("mutedText"); desc.setWordWrap(True)
+        bl.addWidget(desc,1)
+
+        self.auto_btn=QPushButton(" Generate reel"); self.auto_btn.setObjectName("primaryBtn")
+        self.auto_btn.setMinimumHeight(38)
+        self.auto_btn.setToolTip("Auto-order clips, auto-pick mood/transitions, and export in one step")
+        self.auto_btn.clicked.connect(self.auto_reel)
+        self._themed_icon(self.auto_btn,"lightning",15,"#ffffff","icon")
+
+        self.multi_btn=QPushButton(" 3 versions"); self.multi_btn.setObjectName("ghostBtn")
+        self.multi_btn.setMinimumHeight(38)
+        self.multi_btn.setToolTip("Render 3 quick variations (different mood + transitions) to compare")
+        self.multi_btn.clicked.connect(self.auto_reel_multi)
+        self._themed_icon(self.multi_btn,"grid3",14,"tx","icon")
+
+        bl.addWidget(self.auto_btn); bl.addWidget(self.multi_btn)
+        return band
+
+    def _build_media_panel(self):
+        card=self._card()
+        cl=QVBoxLayout(card); cl.setContentsMargins(0,0,0,0); cl.setSpacing(0)
+        self.media_count_label=QLabel("0 items"); self.media_count_label.setObjectName("mutedText")
+        cl.addLayout(self._panel_header("media_hdr","Media Library",self.media_count_label))
+
+        self.media_list=MediaList(self)
+        self.media_list.files_dropped.connect(self.add_files)
+        self.media_list.currentRowChanged.connect(self._on_media_selected)
+        self.media_list.itemDoubleClicked.connect(lambda _i: self.add_selected_to_timeline())
+        body=QWidget(); blay=QVBoxLayout(body); blay.setContentsMargins(13,2,13,14)
+        blay.addWidget(self.media_list)
+        cl.addWidget(body,1)
+
+        footer=QWidget(); footer.setObjectName("mediaFooter")
+        fl=QVBoxLayout(footer); fl.setContentsMargins(13,12,13,13); fl.setSpacing(8)
+        row=QHBoxLayout()
+        bi=QPushButton(" Import"); bi.setObjectName("ghostBtn")
+        bi.setToolTip("Add photos, videos or a song from disk")
+        bi.clicked.connect(self.import_dialog); self._themed_icon(bi,"import",14,"tx","icon")
+        ba=QPushButton("Add "); ba.setObjectName("ghostBtn")
+        ba.setToolTip("Add the selected clip to the timeline (or double-click it)")
+        ba.clicked.connect(self.add_selected_to_timeline); self._themed_icon(ba,"add",14,"tx","icon")
+        row.addWidget(bi); row.addWidget(ba); fl.addLayout(row)
+        ball=QPushButton("Add all to timeline"); ball.setObjectName("ghostBtn")
+        ball.setToolTip("Add every clip in the media library to the timeline, in order")
+        ball.clicked.connect(self.add_all_to_timeline)
+        fl.addWidget(ball)
+        cl.addWidget(footer)
+
+        card.setMinimumWidth(280); card.setMaximumWidth(320)
+        return card
+
+    def _build_preview_panel(self):
+        card=self._card()
+        cl=QVBoxLayout(card); cl.setContentsMargins(0,0,0,0); cl.setSpacing(0)
+        self.preview_meta_label=QLabel(""); self.preview_meta_label.setObjectName("mutedText")
+        cl.addLayout(self._panel_header("preview_hdr","Preview",self.preview_meta_label))
+
+        stage=QWidget(); stage.setObjectName("previewStage")
+        sl=QVBoxLayout(stage); sl.setContentsMargins(22,10,22,10)
+        self.preview_stack=QStackedWidget(); self.preview_stack.setObjectName("previewBox")
+        self.image_label=QLabel("Drop photos, videos and a song to start.\n\nAdd clips to the timeline then Export.")
+        self.image_label.setAlignment(Qt.AlignCenter); self.image_label.setWordWrap(True)
+        self.image_label.setObjectName("previewPlaceholder")
+        self.video_widget=QVideoWidget()
+        self.preview_stack.addWidget(self.image_label)
+        self.preview_stack.addWidget(self.video_widget)
+        sl.addWidget(self.preview_stack,1)
+        cl.addWidget(stage,1)
+
+        self.player=QMediaPlayer(); self.audio_out=QAudioOutput()
+        self.player.setAudioOutput(self.audio_out)
+        self.player.setVideoOutput(self.video_widget)
+        self.player.positionChanged.connect(self._on_player_position)
+        self.player.durationChanged.connect(self._on_player_duration)
+
+        ctl=QWidget(); ctl.setObjectName("previewControls")
+        cbl=QHBoxLayout(ctl); cbl.setContentsMargins(16,13,16,13); cbl.setSpacing(14)
+        self.play_btn=QPushButton(); self.play_btn.setObjectName("playBtn"); self.play_btn.setFixedSize(40,40)
+        self.play_btn.setIcon(_svg_icon("play",15,"#ffffff")); self.play_btn.setIconSize(QSize(15,15))
+        self.play_btn.clicked.connect(self._toggle_play)
+        cbl.addWidget(self.play_btn)
+        self.seek_start_label=QLabel("00:00"); self.seek_start_label.setObjectName("mutedText")
+        self.seek=QSlider(Qt.Horizontal); self.seek.sliderMoved.connect(self.player.setPosition)
+        self.seek_end_label=QLabel("00:00"); self.seek_end_label.setObjectName("mutedText")
+        cbl.addWidget(self.seek_start_label); cbl.addWidget(self.seek,1); cbl.addWidget(self.seek_end_label)
+        cl.addWidget(ctl)
+        return card
+
+    @staticmethod
+    def _fmt_time(ms):
+        s=int(max(0,ms)/1000); m,s=divmod(s,60)
+        return f"{m:02d}:{s:02d}"
+
+    def _on_player_position(self, p):
+        self.seek.setValue(p)
+        self.seek_start_label.setText(self._fmt_time(p))
+        dur=self.player.duration()
+        self.timeline_list.set_playhead_fraction((p/dur) if dur>0 else 0.0)
+
+    def _on_player_duration(self, d):
+        self.seek.setRange(0,d)
+        self.seek_end_label.setText(self._fmt_time(d))
+
+    def _build_timeline_panel(self):
+        card=self._card()
+        cl=QVBoxLayout(card); cl.setContentsMargins(0,0,0,0); cl.setSpacing(0)
+
+        header=QHBoxLayout(); header.setContentsMargins(16,12,16,11); header.setSpacing(10)
+        hico=QLabel(); self._themed_icon(hico,"timeline_hdr",14,"mut","pixmap"); header.addWidget(hico)
+        htxt=QLabel("Timeline"); htxt.setFont(self._serif_font(10.5)); header.addWidget(htxt)
+        hint=QLabel("Drag clips to reorder — or drop from Explorer"); hint.setObjectName("mutedText")
+        header.addWidget(hint); header.addStretch(1)
+        brem=QPushButton(" Remove"); brem.setObjectName("ghostBtn")
+        brem.setToolTip("Remove the selected timeline clip (Del)"); brem.clicked.connect(self.remove_from_timeline)
+        self._themed_icon(brem,"remove",13,"tx","icon")
+        bclr=QPushButton("Clear"); bclr.setObjectName("ghostBtn")
+        bclr.setToolTip("Remove every clip from the timeline"); bclr.clicked.connect(self.clear_timeline)
+        bund=QPushButton(" Undo"); bund.setObjectName("ghostBtn")
+        bund.setToolTip("Undo the last timeline change (Ctrl+Z)"); bund.clicked.connect(self.undo)
+        self._themed_icon(bund,"undo",13,"tx","icon")
+        for b in (brem,bclr,bund): header.addWidget(b)
+        cl.addLayout(header)
+
+        self.timeline_list=TimelineList(self)
+        self.timeline_list.reordered.connect(self._sync_timeline_order)
+        self.timeline_list.currentRowChanged.connect(self._on_timeline_selected)
+        self.timeline_list.files_dropped.connect(self._timeline_files_dropped)
+        body=QWidget(); body.setObjectName("timelineTrack")
+        blay=QVBoxLayout(body); blay.setContentsMargins(16,0,16,0); blay.addWidget(self.timeline_list)
+        cl.addWidget(body,1)
+
+        footer=QWidget(); footer.setObjectName("timelineFooter")
+        fl=QHBoxLayout(footer); fl.setContentsMargins(16,9,16,9)
+        self.clip_count_label=QLabel("0 clips · 0 audio tracks"); self.clip_count_label.setObjectName("mutedText")
+        fl.addWidget(self.clip_count_label); fl.addStretch(1)
+        totlbl=QLabel("Total"); totlbl.setObjectName("mutedText")
+        self.total_label=QLabel("0:00.0"); self.total_label.setFont(self._serif_font(12.5))
+        fl.addWidget(totlbl); fl.addWidget(self.total_label)
+        cl.addWidget(footer)
+        return card
+
+    def _build_inspector_panel(self):
+        card=self._card()
+        cl=QVBoxLayout(card); cl.setContentsMargins(0,0,0,0); cl.setSpacing(0)
+        cl.addLayout(self._panel_header("inspector_hdr","Inspector"))
+
+        tabs=QTabWidget(); tabs.setObjectName("pillTabs"); tabs.setDocumentMode(True)
 
         # ── TAB 1: Clip ──────────────────────────────────────────────────────
-        clip_tab=QWidget(); cf=QFormLayout(clip_tab)
-        self.insp_name=QLabel("—"); self.insp_name.setWordWrap(True)
+        clip_tab=QWidget(); ctv=QVBoxLayout(clip_tab); ctv.setContentsMargins(0,0,0,0); ctv.setSpacing(12)
+
+        info_row=QWidget(); info_row.setObjectName("clipInfoRow")
+        irl=QHBoxLayout(info_row); irl.setContentsMargins(11,10,11,10); irl.setSpacing(10)
+        avatar=QLabel(); avatar.setObjectName("clipAvatar"); avatar.setFixedSize(30,30)
+        avatar.setAlignment(Qt.AlignCenter)
+        self._themed_icon(avatar,"preview_hdr",14,"#ffffff","pixmap")
+        irl.addWidget(avatar)
+        info_col=QVBoxLayout(); info_col.setSpacing(0)
+        cap=QLabel("Selected clip"); cap.setObjectName("mutedText")
+        self.insp_name=QLabel("—")
+        self.insp_name.setTextInteractionFlags(Qt.NoTextInteraction)
+        self.insp_name.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed)
+        info_col.addWidget(cap); info_col.addWidget(self.insp_name)
+        irl.addLayout(info_col,1)
+        ctv.addWidget(info_row)
+
+        form_host=QWidget(); cf=QFormLayout(form_host)
         self.photo_dur_spin=self._dspin(0.5,60,0.5,DEFAULT_PHOTO_DUR," s",self._update_selected_clip)
         self.video_max_spin=self._dspin(1,120,1,DEFAULT_VIDEO_MAX," s",self._update_selected_clip)
         self.trim_start_spin=self._dspin(0,3600,1,0," s in",self._update_selected_clip)
@@ -1005,7 +1549,6 @@ class ReelForge(QMainWindow):
         self.crop_bias_combo=QComboBox()
         self.crop_bias_combo.addItems(["center","top","bottom","blur_bg"])
         self.crop_bias_combo.currentTextChanged.connect(self._update_selected_clip)
-        cf.addRow("File:",self.insp_name)
         cf.addRow("Photo length:",self.photo_dur_spin)
         cf.addRow("Video max:",self.video_max_spin)
         cf.addRow("Start at:",self.trim_start_spin)
@@ -1016,9 +1559,13 @@ class ReelForge(QMainWindow):
         mbox=QGroupBox("Music")
         mf=QVBoxLayout(mbox)
         self.music_label=QLabel("No song selected"); self.music_label.setWordWrap(True)
-        bm=QPushButton("Choose song…"); bm.clicked.connect(self.choose_music)
-        mf.addWidget(self.music_label); mf.addWidget(bm)
+        self.waveform_bar=WaveformBar(self)
+        bm=QPushButton(" Choose song…"); bm.setObjectName("ghostBtn"); bm.clicked.connect(self.choose_music)
+        self._themed_icon(bm,"music_hdr",13,"tx","icon")
+        mf.addWidget(self.music_label); mf.addWidget(self.waveform_bar); mf.addWidget(bm)
         cf.addRow(mbox)
+        ctv.addWidget(form_host)
+        ctv.addStretch(1)
         tabs.addTab(clip_tab,"Clip")
 
         # ── TAB 2: Video ────────────────────────────────────────────────────
@@ -1143,27 +1690,35 @@ class ReelForge(QMainWindow):
         ttf.addRow(style_box)
         tabs.addTab(txt_tab,"Text")
 
-        cl.addWidget(tabs,1)
+        scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(tabs)
+        scroll.setFrameShape(QFrame.NoFrame)
+        body=QWidget(); bodyl=QVBoxLayout(body); bodyl.setContentsMargins(15,4,15,4); bodyl.addWidget(scroll)
+        cl.addWidget(body,1)
 
-        # export controls always visible
-        self.preview_btn=QPushButton("▶  Preview draft")
+        # export controls — always visible, pinned below the scrollable tabs
+        footer=QWidget(); fl=QVBoxLayout(footer); fl.setContentsMargins(15,10,15,14); fl.setSpacing(8)
+        self.preview_btn=QPushButton(" Preview draft")
+        self.preview_btn.setObjectName("ghostBtn")
         self.preview_btn.setMinimumHeight(36)
         self.preview_btn.setToolTip("Quick low-res render (360p, ultrafast) played in the preview pane —\n"
                                     "see transitions, mood, text and timing without a full export")
         self.preview_btn.clicked.connect(self.preview_draft)
-        cl.addWidget(self.preview_btn)
+        self._themed_icon(self.preview_btn,"play",12,"tx","icon")
+        fl.addWidget(self.preview_btn)
         self.export_btn=QPushButton("Export Reel")
+        self.export_btn.setObjectName("primaryBtn")
         self.export_btn.setMinimumHeight(44)
         self.export_btn.setToolTip("Render the timeline with the settings from these tabs (Ctrl+E)")
         self.export_btn.clicked.connect(self.export_reel)
-        cl.addWidget(self.export_btn)
-        self.progress=QProgressBar(); self.progress.setValue(0); cl.addWidget(self.progress)
+        fl.addWidget(self.export_btn)
+        self.progress=QProgressBar(); self.progress.setValue(0); fl.addWidget(self.progress)
         self.status_label=QLabel("Ready"+(""if FFMPEG else"  —  FFmpeg not found"))
-        cl.addWidget(self.status_label)
+        self.status_label.setObjectName("mutedText")
+        fl.addWidget(self.status_label)
+        cl.addWidget(footer)
 
-        scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(container)
-        scroll.setFrameShape(QFrame.NoFrame)
-        return scroll
+        card.setMinimumWidth(300); card.setMaximumWidth(360)
+        return card
 
     def _dspin(self,mn,mx,step,val,suffix="",slot=None):
         s=QDoubleSpinBox(); s.setRange(mn,mx); s.setSingleStep(step)
@@ -1171,12 +1726,9 @@ class ReelForge(QMainWindow):
         if slot: s.valueChanged.connect(slot)
         return s
 
-    def _section_label(self,text):
-        lbl=QLabel(text); f=QFont(); f.setBold(True); f.setPointSize(9); lbl.setFont(f)
-        lbl.setStyleSheet("color:#8ab4f8;letter-spacing:1px;"); return lbl
-
     def _build_menu(self):
-        bar=self.menuBar(); fm=bar.addMenu("File")
+        bar=QMenuBar(); bar.setObjectName("menuBar")
+        fm=bar.addMenu("File")
         for txt,slot,shortcut in [
             ("Import media…",self.import_dialog,None),("Choose song…",self.choose_music,None),(None,None,None),
             ("Open project…",self.open_project,"Ctrl+O"),("Save project",self.save_project,"Ctrl+S"),
@@ -1188,66 +1740,124 @@ class ReelForge(QMainWindow):
             fm.addAction(a)
         hm=bar.addMenu("Help")
         ab=QAction("About",self); ab.triggered.connect(self._about); hm.addAction(ab)
+        return bar
 
     def _make_arrow_icon(self,direction):
-        """Draw a small triangle PNG for the spin-box up/down buttons.
-        Native styles stop drawing their own arrow once the button subcontrol
-        is stylesheet-customized, so we have to supply one ourselves."""
-        size=10
-        pm=QPixmap(size,size); pm.fill(Qt.transparent)
-        p=QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
-        p.setBrush(QColor("#d7dae2")); p.setPen(Qt.NoPen)
-        if direction=="up":
-            pts=[QPointF(1,size-2),QPointF(size-1,size-2),QPointF(size/2,1.5)]
-        else:
-            pts=[QPointF(1,1.5),QPointF(size-1,1.5),QPointF(size/2,size-2)]
-        p.drawPolygon(QPolygonF(pts)); p.end()
-        path=self._tmpdir/f"arrow_{direction}.png"
+        """Render a small chevron PNG for the spin-box up/down buttons — Qt
+        stops drawing its own arrow once the button subcontrol is stylesheet-
+        customized, so we supply one, coloured for the current theme (the
+        filename bakes in the theme name so QSS doesn't cache a stale colour
+        under the same url() after a toggle)."""
+        pm=_svg_pixmap("chevron_up" if direction=="up" else "chevron_down",10,self._colors["mut"])
+        path=self._tmpdir/f"arrow_{direction}_{self.theme}.png"
         pm.save(str(path))
         return str(path).replace("\\","/")
 
-    def _apply_dark_theme(self):
-        up_arrow=self._make_arrow_icon("up")
-        down_arrow=self._make_arrow_icon("down")
-        self.setStyleSheet("""
-            QMainWindow,QWidget{background:#1e1f24;color:#e6e6e6;font-family:'Segoe UI',Arial;font-size:13px}
-            QTabWidget::pane{border:1px solid #34353c;border-radius:6px}
-            QTabBar::tab{background:#26272e;border:1px solid #34353c;padding:6px 14px;border-radius:4px 4px 0 0}
-            QTabBar::tab:selected{background:#3a5fcf;color:white}
-            QListWidget{background:#26272e;border:1px solid #34353c;border-radius:6px;padding:4px}
-            QListWidget::item:selected{background:#3a5fcf}
-            QPushButton{background:#2f3038;border:1px solid #3d3e47;border-radius:6px;padding:8px 14px;min-height:18px}
-            QPushButton:hover{background:#3a3b45;border-color:#4a4b57}
-            QPushButton:pressed{background:#25262d}
-            QPushButton:disabled{background:#26272e;color:#5a5b63;border-color:#2c2d34}
-            QGroupBox{border:1px solid #34353c;border-radius:6px;margin-top:10px;padding:8px}
-            QGroupBox::title{subcontrol-origin:margin;left:8px;padding:0 4px;color:#a9b1d6}
-            QProgressBar{border:1px solid #34353c;border-radius:6px;text-align:center;background:#26272e;height:18px}
-            QProgressBar::chunk{background:#3a5fcf;border-radius:5px}
-            QComboBox,QDoubleSpinBox,QSpinBox,QLineEdit{background:#26272e;border:1px solid #3d3e47;border-radius:5px;padding:3px}
-            QDoubleSpinBox,QSpinBox{min-height:28px;padding-right:24px}
-            QDoubleSpinBox::up-button,QSpinBox::up-button{
+    def _apply_theme(self):
+        c=self._colors
+        up_arrow=self._make_arrow_icon("up"); down_arrow=self._make_arrow_icon("down")
+        radius=0 if self.isMaximized() else 16
+        qss=f"""
+            QWidget{{color:{c['tx']};font-family:'Segoe UI',Arial;font-size:13px}}
+            QMainWindow{{background:transparent}}
+            QFrame[card="true"]{{background:{c['panel']};border:1px solid {c['bd']};border-radius:13px}}
+            QFrame#rfRoot{{background:{c['bg']};border:1px solid {c['frame']};border-radius:{radius}px}}
+            QFrame#rfRoot[maximized="true"]{{border-radius:0px;border:none}}
+            QFrame#titlebar{{background:transparent;border:none}}
+            QLabel#titleText{{font-weight:600}}
+            QLabel#pathPill{{color:{c['mut']};font-size:10px;border:1px solid {c['bd']};
+                              border-radius:10px;padding:3px 9px}}
+            QLabel#mutedText{{color:{c['mut']};font-size:11px}}
+            QLabel#autoLabel{{color:{c['ac']};font-weight:600;font-size:13px}}
+            QFrame#titleSep{{background:{c['bd']};border:none}}
+            QPushButton#modeBtn,QPushButton#chromeBtn{{background:transparent;border:none;
+                              border-radius:8px;color:{c['mut']};padding:0 10px;min-height:0}}
+            QPushButton#modeBtn:hover,QPushButton#chromeBtn:hover{{background:{c['hov']}}}
+            QPushButton#closeBtn:hover{{background:{c['ac']};color:#ffffff}}
+            QMenuBar#menuBar{{background:transparent;padding:2px 14px;border:none;font-size:12px}}
+            QMenuBar#menuBar::item{{background:transparent;padding:4px 10px;border-radius:6px}}
+            QMenuBar#menuBar::item:selected{{background:{c['hov']}}}
+            QMenu{{background:{c['panel']};color:{c['tx']};border:1px solid {c['bd']}}}
+            QMenu::item:selected{{background:{c['ac']};color:#ffffff}}
+
+            QPushButton{{background:{c['inset']};border:1px solid {c['bd']};border-radius:9px;
+                         padding:8px 14px;min-height:18px}}
+            QPushButton:hover{{background:{c['hov2']};border-color:{c['bd2']}}}
+            QPushButton:pressed{{background:{c['inset']}}}
+            QPushButton:disabled{{color:{c['mut']};border-color:{c['bd']}}}
+            QPushButton#ghostBtn{{background:{c['inset']};border:1px solid {c['bd']}}}
+            QPushButton#ghostBtn:hover{{background:{c['hov2']};border-color:{c['bd2']}}}
+            QPushButton#primaryBtn{{background:{c['ac']};color:#ffffff;border:none;font-weight:600}}
+            QPushButton#primaryBtn:hover{{background:{c['ac2']}}}
+            QPushButton#primaryBtn:disabled{{background:{c['bd']};color:{c['mut']}}}
+            QPushButton#playBtn{{background:{c['ac']};border:none;border-radius:20px}}
+            QPushButton#playBtn:hover{{background:{c['ac2']}}}
+
+            QLabel#clipAvatar{{background:{c['ac']};border-radius:7px}}
+            QWidget#clipInfoRow{{background:{c['inset']};border-radius:9px}}
+            QWidget#mediaFooter,QWidget#timelineFooter{{border-top:1px solid {c['bd']}}}
+            QWidget#previewStage{{background:{c['inset']}}}
+            QStackedWidget#previewBox{{background:#131211;border-radius:12px}}
+            QLabel#previewPlaceholder{{color:{c['mut']}}}
+
+            QTabWidget#pillTabs::pane{{border:none;margin-top:6px}}
+            QTabWidget#pillTabs::tab-bar{{alignment:left}}
+            QTabBar::tab{{background:transparent;color:{c['mut']};padding:9px 6px;margin-right:4px;
+                          border:none;border-radius:8px;min-width:56px}}
+            QTabBar::tab:selected{{background:{c['ac']};color:#ffffff;font-weight:600}}
+            QTabBar::tab:hover:!selected{{background:{c['hov']}}}
+
+            QListWidget{{background:transparent;border:none}}
+            QListWidget::item{{border:none}}
+            QListWidget::item:selected{{background:transparent}}
+
+            QGroupBox{{border:1px solid {c['bd']};border-radius:9px;margin-top:12px;padding:10px;
+                       background:{c['inset']}}}
+            QGroupBox::title{{subcontrol-origin:margin;left:8px;padding:0 4px;color:{c['mut']}}}
+
+            QProgressBar{{border:1px solid {c['bd']};border-radius:6px;text-align:center;
+                          background:{c['inset']};height:16px;color:{c['tx']}}}
+            QProgressBar::chunk{{background:{c['ac']};border-radius:5px}}
+
+            QComboBox,QDoubleSpinBox,QSpinBox,QLineEdit{{background:{c['inset']};
+                          border:1px solid {c['bd']};border-radius:8px;padding:4px 8px}}
+            QComboBox:hover,QDoubleSpinBox:hover,QSpinBox:hover,QLineEdit:hover{{border-color:{c['bd2']}}}
+            QComboBox::drop-down{{border:none;width:22px}}
+            QComboBox QAbstractItemView{{background:{c['panel']};border:1px solid {c['bd']};
+                          selection-background-color:{c['ac']};selection-color:#ffffff}}
+            QDoubleSpinBox,QSpinBox{{min-height:26px;padding-right:22px}}
+            QDoubleSpinBox::up-button,QSpinBox::up-button{{
                 subcontrol-origin:border;subcontrol-position:top right;
-                width:22px;height:15px;border-left:1px solid #3d3e47;border-bottom:1px solid #3d3e47;
-                border-top-right-radius:5px;background:#33343c}
-            QDoubleSpinBox::down-button,QSpinBox::down-button{
+                width:20px;height:14px;border:none;background:transparent}}
+            QDoubleSpinBox::down-button,QSpinBox::down-button{{
                 subcontrol-origin:border;subcontrol-position:bottom right;
-                width:22px;height:15px;border-left:1px solid #3d3e47;
-                border-bottom-right-radius:5px;background:#33343c}
+                width:20px;height:14px;border:none;background:transparent}}
             QDoubleSpinBox::up-button:hover,QSpinBox::up-button:hover,
-            QDoubleSpinBox::down-button:hover,QSpinBox::down-button:hover{background:#3a6fdf}
-            QDoubleSpinBox::up-button:pressed,QSpinBox::up-button:pressed,
-            QDoubleSpinBox::down-button:pressed,QSpinBox::down-button:pressed{background:#2050b0}
-            QDoubleSpinBox::up-button:disabled,QSpinBox::up-button:disabled,
-            QDoubleSpinBox::down-button:disabled,QSpinBox::down-button:disabled{background:#26272e}
-            QSlider::groove:horizontal{height:5px;background:#3d3e47;border-radius:2px}
-            QSlider::handle:horizontal{background:#8ab4f8;width:14px;margin:-5px 0;border-radius:7px}
-            QMenuBar{background:#1e1f24} QMenuBar::item:selected{background:#3a3b45}
-            QMenu{background:#26272e;border:1px solid #34353c} QMenu::item:selected{background:#3a5fcf}
-            QScrollArea{border:none}
-        """ +
-        f"QDoubleSpinBox::up-arrow,QSpinBox::up-arrow{{image:url({up_arrow});width:9px;height:9px}}"
-        f"QDoubleSpinBox::down-arrow,QSpinBox::down-arrow{{image:url({down_arrow});width:9px;height:9px}}")
+            QDoubleSpinBox::down-button:hover,QSpinBox::down-button:hover{{background:{c['hov']}}}
+
+            QSlider::groove:horizontal{{height:5px;background:{c['bd']};border-radius:2px}}
+            QSlider::sub-page:horizontal{{background:{c['ac']};border-radius:2px}}
+            QSlider::handle:horizontal{{background:{c['ac']};width:13px;margin:-4px 0;border-radius:6px}}
+
+            QScrollArea{{background:transparent;border:none}}
+            QScrollBar:vertical{{background:transparent;width:10px;margin:2px}}
+            QScrollBar::handle:vertical{{background:{c['bd2']};border-radius:5px;min-height:24px}}
+            QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0px}}
+            QScrollBar:horizontal{{background:transparent;height:10px;margin:2px}}
+            QScrollBar::handle:horizontal{{background:{c['bd2']};border-radius:5px;min-width:24px}}
+            QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{{width:0px}}
+        """ + (
+            f"QDoubleSpinBox::up-arrow,QSpinBox::up-arrow{{image:url({up_arrow});width:8px;height:8px}}"
+            f"QDoubleSpinBox::down-arrow,QSpinBox::down-arrow{{image:url({down_arrow});width:8px;height:8px}}"
+        )
+        self.setStyleSheet(qss)
+        self._refresh_themed_icons()
+        self._update_mode_button(); self._update_max_icon()
+        for name in ("media_list","timeline_list","waveform_bar"):
+            w=getattr(self,name,None)
+            if w is None: continue
+            (w.viewport() if hasattr(w,"viewport") else w).update()
+        if hasattr(self,"timeline_list"): self.timeline_list._playhead.update()
 
     # ── thumbnails ────────────────────────────────────────────────────────────
     def _icon_for(self,clip):
@@ -1320,15 +1930,26 @@ class ReelForge(QMainWindow):
             self._pending_import_paths=[]
             self.add_files(pending)
 
+    @staticmethod
+    def _media_badge(clip):
+        if clip.kind=="photo": return "PHOTO"
+        m,s=divmod(int(clip.duration or 0),60)
+        return f"{m}:{s:02d}"
+
     def _add_media_row(self,clip):
         item=QListWidgetItem(self._icon_for(clip),clip.name)
         item.setData(Qt.UserRole,id(clip))
+        item.setData(ROLE_KIND,clip.kind)
+        item.setData(ROLE_BADGE,self._media_badge(clip))
         self.media_list.addItem(item)
         item.setToolTip(clip.path)
+        self.media_count_label.setText(f"{len(self.media)} item"+("s" if len(self.media)!=1 else ""))
 
     def _make_timeline_item(self,clip):
-        item=QListWidgetItem(self._icon_for(clip),clip.name+f"\n{clip.render_duration():.1f}s")
+        item=QListWidgetItem(self._icon_for(clip),clip.name)
         item.setData(Qt.UserRole,id(clip))
+        item.setData(ROLE_KIND,"VIDEO" if clip.kind=="video" else "PHOTO")
+        item.setData(ROLE_BADGE,f"{clip.render_duration():.1f}s")
         item.setToolTip(clip.path)
         return item
 
@@ -1339,6 +1960,7 @@ class ReelForge(QMainWindow):
             self._beat_times=[]; self._bpm=None; self._beats_for=None; self._song_start=0.0
             if hasattr(self,"bpm_label"): self.bpm_label.setText("BPM: —")
             if hasattr(self,"song_start_label"): self.song_start_label.setText("Start: 0.0s  (not analysed yet)")
+        self._update_total()
 
     def choose_music(self):
         exts=" ".join("*"+e for e in AUDIO_EXTS)
@@ -1399,12 +2021,19 @@ class ReelForge(QMainWindow):
 
     def _update_total(self):
         total=sum(c.render_duration() for c in self.timeline)
-        self.total_label.setText(f"Total: {total:.1f}s  ({len(self.timeline)} clips)")
+        m,s=divmod(total,60)
+        self.total_label.setText(f"{int(m)}:{s:04.1f}")
+        n=len(self.timeline)
+        tracks=1 if self.music_path else 0
+        self.clip_count_label.setText(
+            f"{n} clip{'s' if n!=1 else ''} · {tracks} audio track{'s' if tracks!=1 else ''}")
 
     def _refresh_timeline_label(self,row):
         if 0<=row<self.timeline_list.count():
             c=self.timeline[row]
-            self.timeline_list.item(row).setText(c.name+f"\n{c.render_duration():.1f}s")
+            item=self.timeline_list.item(row)
+            item.setData(ROLE_BADGE,f"{c.render_duration():.1f}s")
+            self.timeline_list.viewport().update()
 
     # ── undo ──────────────────────────────────────────────────────────────────
     def _push_undo(self):
@@ -1443,7 +2072,8 @@ class ReelForge(QMainWindow):
 
     def _load_inspector(self,clip,row,is_tl):
         self._insp_clip=clip; self._insp_row=row; self._insp_is_tl=is_tl
-        self.insp_name.setText(clip.name)
+        fm=self.insp_name.fontMetrics()
+        self.insp_name.setText(fm.elidedText(clip.name,Qt.ElideMiddle,220))
         for w in [self.photo_dur_spin,self.video_max_spin,self.trim_start_spin,self.speed_spin,self.crop_bias_combo]:
             w.blockSignals(True)
         self.photo_dur_spin.setValue(clip.photo_dur); self.video_max_spin.setValue(clip.video_max)
@@ -1496,9 +2126,9 @@ class ReelForge(QMainWindow):
 
     def _toggle_play(self):
         if self.player.playbackState()==QMediaPlayer.PlayingState:
-            self.player.pause(); self.play_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            self.player.pause(); self.play_btn.setIcon(_svg_icon("play",15,"#ffffff"))
         else:
-            self.player.play(); self.play_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
+            self.player.play(); self.play_btn.setIcon(_svg_icon("pause",15,"#ffffff"))
 
     # ── audio intelligence ────────────────────────────────────────────────────
     def _beats_per_clip(self):
@@ -1870,7 +2500,7 @@ class ReelForge(QMainWindow):
         self.player.setSource(QUrl.fromLocalFile(path))
         self.preview_stack.setCurrentIndex(1)
         self.player.play()
-        self.play_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
+        self.play_btn.setIcon(_svg_icon("pause",15,"#ffffff"))
 
     def _export_done(self,path):
         self.export_btn.setEnabled(True); self.preview_btn.setEnabled(True)
