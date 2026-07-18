@@ -1,0 +1,9 @@
+# PyInstaller / installer build artifacts (large binaries, regenerated on demand)
+build/
+dist/
+Output/
+*.spec
+pyinstaller_build*.log
+
+__pycache__/
+*.pyc

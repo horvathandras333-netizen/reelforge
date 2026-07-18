@@ -46,7 +46,13 @@ log = logging.getLogger("reelforge")
 
 # ── constants ────────────────────────────────────────────────────────────────
 APP_NAME    = "ReelForge"
-APP_DIR     = Path(__file__).resolve().parent
+# frozen (PyInstaller) builds bundle data files next to sys.executable
+# (onedir) or under sys._MEIPASS (onefile) rather than next to this .py
+if getattr(sys, "frozen", False):
+    APP_DIR = Path(getattr(sys, "_MEIPASS", None) or sys.executable).resolve()
+    if APP_DIR.is_file(): APP_DIR = APP_DIR.parent
+else:
+    APP_DIR = Path(__file__).resolve().parent
 ICON_PATH   = str(APP_DIR / ("icon.ico" if (APP_DIR/"icon.ico").exists() else "icon.png"))
 PROJECT_EXT = ".rfproj"
 PHOTO_EXTS  = {".jpg",".jpeg",".png",".webp",".bmp"}
