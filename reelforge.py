@@ -106,9 +106,9 @@ _NO_WINDOW = getattr(subprocess,"CREATE_NO_WINDOW",0) if os.name=="nt" else 0
 # ── theme palettes ───────────────────────────────────────────────────────────
 THEMES = {
     "dark": {
-        "bg":"#262624","panel":"#2f2e2b","inset":"#211f1d","frame":"#3a3835",
-        "tx":"#ece7df","mut":"#9c968b","bd":"#3a3835","bd2":"#4b4844",
-        "ac":"#d97757","ac2":"#c4633f",
+        "bg":"#211b2e","panel":"#2a2239","inset":"#1b1526","frame":"#3d3350",
+        "tx":"#eee8f7","mut":"#a89bc2","bd":"#3d3350","bd2":"#4f4266",
+        "ac":"#d4a72c","ac2":"#b88f23",
         "hov":"rgba(255,255,255,14)","hov2":"rgba(255,255,255,23)",
     },
     "light": {
