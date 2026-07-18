@@ -27,7 +27,8 @@ from pathlib import Path
 from PySide6.QtCore import (Qt, QThread, Signal, QUrl, QSize, QTimer, QMimeData, QPointF,
                              QByteArray, QRectF, QRect, QEvent)
 from PySide6.QtGui  import (QPixmap, QIcon, QAction, QFont, QFontDatabase, QDrag, QShortcut,
-                             QKeySequence, QPainter, QColor, QPolygonF, QCursor, QPainterPath, QPen)
+                             QKeySequence, QPainter, QColor, QPolygonF, QCursor, QPainterPath, QPen,
+                             QPalette)
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -1878,6 +1879,23 @@ class ReelForge(QMainWindow):
             f"QDoubleSpinBox::up-arrow,QSpinBox::up-arrow{{image:url({up_arrow});width:8px;height:8px}}"
             f"QDoubleSpinBox::down-arrow,QSpinBox::down-arrow{{image:url({down_arrow});width:8px;height:8px}}"
         )
+        # unstyled regions (tab pane, scroll viewports) paint from QPalette,
+        # which otherwise follows the OS light/dark setting — pin it to the
+        # theme so no system-coloured patches bleed through either mode
+        pal=QPalette()
+        pal.setColor(QPalette.Window,QColor(c["panel"]))
+        pal.setColor(QPalette.Base,QColor(c["inset"]))
+        pal.setColor(QPalette.AlternateBase,QColor(c["panel"]))
+        pal.setColor(QPalette.Text,QColor(c["tx"]))
+        pal.setColor(QPalette.WindowText,QColor(c["tx"]))
+        pal.setColor(QPalette.Button,QColor(c["inset"]))
+        pal.setColor(QPalette.ButtonText,QColor(c["tx"]))
+        pal.setColor(QPalette.PlaceholderText,QColor(c["mut"]))
+        pal.setColor(QPalette.Highlight,QColor(c["ac"]))
+        pal.setColor(QPalette.HighlightedText,QColor("#ffffff"))
+        pal.setColor(QPalette.ToolTipBase,QColor(c["panel"]))
+        pal.setColor(QPalette.ToolTipText,QColor(c["tx"]))
+        QApplication.instance().setPalette(pal)
         self.setStyleSheet(qss)
         self._refresh_themed_icons()
         self._update_mode_button(); self._update_max_icon()
