@@ -7,3 +7,6 @@ pyinstaller_build*.log
 
 __pycache__/
 *.pyc
+
+# Local agent scheduling state
+.claude/scheduled_tasks.lock
